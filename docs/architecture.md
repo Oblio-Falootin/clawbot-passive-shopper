@@ -38,6 +38,118 @@ MONITORING (passive, background)
 
 ---
 
+## How Property Weighting Works
+
+This is the core concept that makes passive shopping different from a search engine.
+
+Every criterion has two numbers the user never has to think about:
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `ctype` | `must_have` \| `want` \| `nice_to_have` | tier of importance |
+| `weight` | 1–10 | relative importance within tier |
+
+**Score formula:**
+
+```
+Score = Σ(weight × criterion_score_0_to_1) / Σ(all weights) × 10
+```
+
+A `must_have` with a score of 0 **short-circuits to 0** immediately — deal-breaker,
+product removed, no matter how good everything else is.
+
+### Real Example — Beach Drone
+
+The user says: *"cheap drone, fly at the beach, remote control, built-in camera."*
+The agent maps this to:
+
+```
+budget_cap        must_have  w=10  → "cheap" → ask for hard cap
+built_in_camera   must_have  w=10  → stated requirement
+wind_resistance   must_have  w=9   → beach = coastal wind (inferred from context)
+flight_time       want       w=8   → longer is better; 10 min is ok for casual use
+gps_stabilization want       w=7   → hover-hold useful for beach photography
+camera_resolution want       w=6   → 1080p acceptable, 4K better
+folding/portable  nice       w=4   → beach bag friendly is a bonus
+spare_parts_avail nice       w=3   → cheap drones are often disposable
+```
+
+Two products, same price:
+- Drone A: great camera, no wind resistance, no GPS → must_have fails → **score 0.0**
+- Drone B: decent camera, wind resistant, GPS hover → **score 7.8** → ALERT
+
+The user only answered "cheap, beach, camera." The agent did the rest.
+
+### How Weights Are Set
+
+- Weights are **preset per category** based on what actually matters for that product type.
+- Users never touch weights. They answer plain conversational questions.
+- Context inference: "beach" → bumps `wind_resistance`; "astrophotography" → bumps `aperture_min`.
+- **Advanced mode**: user says "I really care about battery life" → agent bumps `flight_time` weight up.
+- **Learning mode** (future): if user buys the $229 scope despite low aperture score → aperture weight
+  was too high for this user. Feeds back into per-user weight profiles over time.
+
+---
+
+## Product Parameter Education
+
+When a user picks a category, the agent can optionally explain the key parameters
+*before* asking questions. This surfaces domain knowledge the user may not have.
+
+Examples:
+- **Telescope**: "Aperture is king. A 130mm scope gathers 3× more light than a 70mm."
+- **Drone**: "FAA requires registration for drones over 250g. Most 'cheap' beach drones are under."
+- **Laptop**: "RAM cannot be upgraded on most modern laptops — get what you need now."
+
+This is the `parameter_education` feature — queued as a future implementation item (FALOO-XX).
+Goal: reduce clarifying question round-trips by giving users the vocabulary to answer confidently.
+
+---
+
+## Category Gap Analysis (from Live Test Sessions)
+
+### Session 1 — Telescope (2026-03-22)
+**Inquiry:** "I'd like a telescope for my back deck. I want it to be Bluetooth enabled.
+And can take pictures with my phone or stream to the computer."
+
+**What worked:** Category detected correctly. 8 criteria loaded. Scoring functional.
+
+**Gaps found:**
+- `bluetooth_enabled` — not in question tree → misses entire smart telescope category
+- `phone_compatible` — not modeled
+- `streaming_support` — not modeled
+- **Missing subcategory:** `smart_telescope` (Celestron Origin, Unistellar eVscope, Vaonis Stellina)
+  — price range $800–$4,000+; completely different feature set from optical scopes
+
+**Tickets created:** FALOO-XX (see Jira FALOO project)
+
+---
+
+### Session 2 — Drone (2026-03-22)
+**Inquiry:** "I'd like to buy a cheap drone that I can fly at the beach.
+It is remote control and has a built-in camera."
+
+**What worked:** Budget extraction ready. Scoring logic works.
+
+**Gaps found:**
+- `drone` classified as `camera` — needs its own top-level category
+- No drone question tree exists — fell back to `generic` (only 3 questions)
+- Missing drone-specific criteria:
+  - `flight_time` (battery endurance, minutes)
+  - `wind_resistance` (critical for coastal/beach use)
+  - `camera_resolution` (1080p vs 4K)
+  - `range` (meters)
+  - `gps_stabilization` (hover-hold capability)
+  - `faa_registration_required` (>250g triggers FAA reg — regulatory must_have)
+  - `folding_design` (portability for beach bag)
+  - `spare_parts_available` (cheap drones are often disposable)
+- No mock listings for drone category
+- Context inference not wired: "beach" should raise wind_resistance weight automatically
+
+**Tickets created:** FALOO-XX (see Jira FALOO project)
+
+---
+
 ## Components
 
 ### CriteriaModel
@@ -57,7 +169,8 @@ MONITORING (passive, background)
 ### ListingMonitor
 - Builds targeted search queries from answered criteria
 - Sources: Brave Search API (live), mock mode (testing)
-- Planned: Amazon, eBay, Reddit, CamelCamelCamel
+- Planned: Amazon product search API, eBay Finding API, Reddit (r/deals, category subs),
+  CamelCamelCamel (price history)
 - Returns raw listing dicts; scorer handles ranking
 
 ### AlertEngine
@@ -87,20 +200,6 @@ memory.ShoppingAlerts       -- id, session_id, candidate_id, score, reason, noti
 
 ---
 
-## The Weights Philosophy
-
-Every criterion has:
-- `ctype`: `must_have` | `want` | `nice_to_have`
-- `weight`: 0–10 (how much it matters within its tier)
-
-Score = Σ(weight × score_0_1) / Σ(weights) × 10
-
-A must_have with score=0 short-circuits to 0 (deal-breaker).
-The user never has to think about weights — they answer questions, weights are preset per category.
-Advanced users can override.
-
----
-
 ## Monitoring Flow
 
 ```
@@ -119,31 +218,48 @@ re-queue check_session for N hours later (adaptive: shorter interval if price is
 
 ## Category Roadmap
 
-Phase 1 (implemented):
-- telescope, laptop (question trees done)
-- camera, headphones, keyboard, monitor, gpu (skeletons)
-- generic (fallback, budget + brand + condition)
+### Phase 1 (implemented)
+- telescope ✅ question tree done
+- laptop ✅ question tree done
+- camera, headphones, keyboard, monitor, gpu — skeletons only
+- generic — fallback (budget + brand + condition)
 
-Phase 2:
-- car (make/model/year/mileage/trim)
+### Phase 2 (tickets filed)
+- **drone** — full question tree needed (see gap analysis above)
+- smart_telescope subcategory — bluetooth/phone/streaming criteria
+- car (make/model/year/mileage/trim/location)
 - house (location/sqft/beds/price/commute)
 - software/SaaS (features/pricing/integrations)
 
+### Phase 3 (future)
+- context inference engine ("beach" → boost wind_resistance automatically)
+- parameter education delivery before question loop
+- per-user weight profiles (learning from past purchases)
+
 ---
 
-## Future: Learning
+## Context Inference Engine (planned)
 
-After a user buys (or passes), the agent updates criterion weights:
-- "Bought the $229 one even though aperture was only 130mm" → aperture weight was too high for this user
-- Feed back into per-user weight profiles over time
-- Eventually: "Based on your past 3 purchases, here's what you actually care about"
+The goal is to extract implicit requirements from natural language that the user
+didn't spell out, but are obviously implied.
+
+Examples:
+- "at the beach" → `wind_resistance` weight bumped to 9; `saltwater_safe` added
+- "back deck at night" → `use_case=astrophotography` pre-filled; `portability=balcony/home`
+- "for my kid" → `durability` weight raised; `price` ceiling lowered
+- "for travel" → `folding=true` added as want; `weight_max` criterion added
+
+Implementation: keyword → criterion mapping table, run against goal string before
+presenting first question. Reduces round-trips significantly.
 
 ---
 
 ## Integration Points
 
 - **Oblio heartbeat**: surface active sessions with new matches
-- **Jira**: each shopping session becomes a FALOO (or KAN) task
+- **Jira**: each shopping session gap becomes a FALOO task; agent transitions when done
 - **Discord/Telegram**: alerts delivered as rich messages with buy links
 - **CamelCamelCamel**: price history charts for Amazon products
 - **SQL memory**: full history of what was considered and why
+- **Amazon Product Advertising API**: live product data with specs, prices, reviews
+- **eBay Finding API**: used/refurb listings; auction monitoring
