@@ -370,7 +370,7 @@ class PassiveShopper:
     Persists all state to SQL.
     """
 
-    def __init__(self, backend: str = 'cloud', brave_api_key: Optional[str] = None):
+    def __init__(self, backend: str = 'local', brave_api_key: Optional[str] = None):
         self.backend = backend
         self._mem = None
         self._model = CriteriaModel()
